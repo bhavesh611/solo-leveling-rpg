@@ -1,13 +1,24 @@
-const API_URL = 'https://api.anthropic.com/v1/messages';
-const MODEL   = 'claude-sonnet-4-5';
+/**
+ * All Anthropic API calls go through /api/proxy (Vercel serverless function)
+ * to avoid browser CORS restrictions on api.anthropic.com.
+ */
+const MODEL = 'claude-sonnet-4-5';
 
-const headers = (apiKey) => ({
-  'Content-Type': 'application/json',
-  'x-api-key': apiKey,
-  'anthropic-version': '2023-06-01',
-  'anthropic-dangerous-allow-browser': 'true',
-});
+const callProxy = async (apiKey, body) => {
+  const res = await fetch('/api/proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ apiKey, ...body }),
+  });
 
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `Error ${res.status}`);
+  }
+  return res.json();
+};
+
+// ── Quest generation ────────────────────────────────────────────────────────
 const questSystemPrompt = (player, profile) => `You are the System — the omniscient AI that governs hunters in the Solo Leveling universe. Generate exactly 5 personalized daily health quests for this hunter.
 
 HUNTER PROFILE:
@@ -27,11 +38,27 @@ QUEST RULES:
 - All quests must be completable within the hunter's daily time constraint
 - Difficulty must match the hunter's current rank (${player.rank}-Rank)
 - Descriptions must be specific, actionable, and under 20 words
-- Hydration quest MUST be included every day
+- Hydration quest MUST always be included
 
 Return ONLY a valid JSON array — no markdown, no explanation:
 [{"id":1,"type":"workout","title":"TITLE IN CAPS","description":"Specific actionable description.","xp":25},...]`;
 
+export const generateQuests = async (apiKey, player, profile) => {
+  const data = await callProxy(apiKey, {
+    model: MODEL,
+    max_tokens: 1024,
+    system: questSystemPrompt(player, profile),
+    messages: [{ role: 'user', content: 'Assign my daily quests.' }],
+  });
+
+  const text = data.content[0].text.trim();
+  const match = text.match(/\[[\s\S]*\]/);
+  if (!match) throw new Error('No JSON in response');
+  const quests = JSON.parse(match[0]);
+  return quests.map(q => ({ ...q, completed: false }));
+};
+
+// ── AI Coach ────────────────────────────────────────────────────────────────
 const coachSystemPrompt = (player, profile) => `You are the System — an omniscient, cold, and terse AI entity from the Solo Leveling universe. You are this hunter's personal health coach. You speak in short, dramatic sentences. Precise. Results-focused. Occasionally intimidating. Never break character.
 
 HUNTER STATUS:
@@ -47,50 +74,24 @@ INSTRUCTIONS:
 - Use dramatic System-style language ("The System acknowledges...", "Acceptable.", "Insufficient.", etc.)
 - Provide practical, rank-appropriate feedback`;
 
-export const generateQuests = async (apiKey, player, profile) => {
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: headers(apiKey),
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 1024,
-      system: questSystemPrompt(player, profile),
-      messages: [{ role: 'user', content: 'Assign my daily quests.' }],
-    }),
+export const sendCoachMessage = async (apiKey, messages, player, profile) => {
+  const data = await callProxy(apiKey, {
+    model: MODEL,
+    max_tokens: 512,
+    system: coachSystemPrompt(player, profile),
+    messages,
   });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `API error ${res.status}`);
-  }
-
-  const data = await res.json();
-  const text = data.content[0].text.trim();
-  const match = text.match(/\[[\s\S]*\]/);
-  if (!match) throw new Error('No JSON in response');
-  const quests = JSON.parse(match[0]);
-  return quests.map(q => ({ ...q, completed: false }));
+  return data.content[0].text;
 };
 
-export const sendCoachMessage = async (apiKey, messages, player, profile) => {
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: headers(apiKey),
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 512,
-      system: coachSystemPrompt(player, profile),
-      messages,
-    }),
+// ── Validation ping ─────────────────────────────────────────────────────────
+export const validateApiKey = async (apiKey) => {
+  const data = await callProxy(apiKey, {
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 10,
+    messages: [{ role: 'user', content: 'ping' }],
   });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `API error ${res.status}`);
-  }
-
-  const data = await res.json();
-  return data.content[0].text;
+  return !!data.content;
 };
 
 export const parseXPAward = (text) => {

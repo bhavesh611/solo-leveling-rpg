@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import OrnateBox from './OrnateBox';
+import { validateApiKey } from '../utils/claude';
 
 export default function ApiKeyScreen({ onSubmit }) {
   const [key, setKey] = useState('');
@@ -15,30 +16,16 @@ export default function ApiKeyScreen({ onSubmit }) {
     }
     setLoading(true);
     setError('');
-    // Quick validation ping
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': trimmed,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-allow-browser': 'true',
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 10,
-          messages: [{ role: 'user', content: 'ping' }],
-        }),
-      });
-      if (res.status === 401) throw new Error('AUTHENTICATION FAILED. KEY REJECTED BY THE SYSTEM.');
-      if (!res.ok && res.status !== 200) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(d?.error?.message || `CONNECTION ERROR ${res.status}`);
-      }
+      await validateApiKey(trimmed);
       onSubmit(trimmed);
     } catch (err) {
-      setError(err.message || 'CONNECTION TO SYSTEM FAILED.');
+      const msg = err.message || '';
+      if (msg.includes('401') || msg.toLowerCase().includes('auth') || msg.toLowerCase().includes('invalid')) {
+        setError('AUTHENTICATION FAILED. KEY REJECTED BY THE SYSTEM.');
+      } else {
+        setError(msg || 'CONNECTION TO SYSTEM FAILED.');
+      }
       setLoading(false);
     }
   };
